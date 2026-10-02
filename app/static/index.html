@@ -78,6 +78,81 @@
       <p id="conflictMsg"></p>
       <p class="meta">相同审计标识已冻结不同契约；原结论保持不变，可点“按标识重开结论”查看。</p>
     </section>
+
+    <section class="card">
+      <h2>迁移签证：把已判定兼容的冻结审计迁到改名/重排后的新版契约</h2>
+      <p class="meta">
+        仅当新版发送端、接收端分别与来源对应声明<strong>完全结构等价</strong>时签发：
+        允许声明重排与类型名整体替换；字段名、必需性、变体标签、基础类型必须保持。
+        签证按迁移标识冻结，重传与重启后重开同一签证。
+      </p>
+      <div class="row">
+        <label class="grow">
+          迁移标识
+          <input id="migrationId" type="text" placeholder="如 CMD-MIGRATION-2026-001" spellcheck="false" />
+        </label>
+        <label class="grow">
+          来源审计标识
+          <input id="sourceAuditId" type="text" placeholder="如 CMD-AUDIT-2026-001" spellcheck="false" />
+        </label>
+        <label>
+          新版根类型名（必填）
+          <input id="newRootName" type="text" placeholder="如 Command" spellcheck="false" />
+        </label>
+      </div>
+      <div class="row">
+        <button id="loadMigrationExample" type="button" class="ghost">载入改名+重排示例</button>
+        <button id="reopenMigrationBtn" type="button" class="ghost">按迁移标识重开签证</button>
+      </div>
+    </section>
+
+    <div class="grid">
+      <section class="card">
+        <h2>新版发送端声明（至多 24 个，顺序可与来源不同）</h2>
+        <textarea id="newSenderTypes" spellcheck="false"></textarea>
+      </section>
+      <section class="card">
+        <h2>新版接收端声明（至多 24 个，顺序可与来源不同）</h2>
+        <textarea id="newReceiverTypes" spellcheck="false"></textarea>
+      </section>
+    </div>
+
+    <section class="card actions">
+      <button id="submitMigrationBtn" type="button">申请迁移签证</button>
+      <span id="migrationError" class="editor-error"></span>
+    </section>
+
+    <section id="migrationIssuesCard" class="card hidden">
+      <h2>迁移请求问题（一次反馈，须全部修正）</h2>
+      <ul id="migrationIssuesList"></ul>
+    </section>
+
+    <section id="migrationRejectCard" class="card hidden conflict">
+      <h2>迁移被拒绝：未签发签证，已冻结记录均未改写</h2>
+      <ul id="migrationRejectList"></ul>
+    </section>
+
+    <section id="migrationConflictCard" class="card hidden conflict">
+      <h2>迁移被拒绝：来源或新版契约与已冻结签证冲突</h2>
+      <p id="migrationConflictMsg"></p>
+      <p class="meta">同一迁移标识改换来源审计或新版契约将被拒绝；原签证保持不变，可按迁移标识重开。</p>
+    </section>
+
+    <section id="migrationResultCard" class="card hidden ok-card">
+      <h2 id="migrationResultTitle"></h2>
+      <p id="migrationMeta" class="meta"></p>
+      <h3>发送端具名类型双射（来源 → 新版）</h3>
+      <table class="kv">
+        <thead><tr><th>来源类型名</th><th>新版类型名</th></tr></thead>
+        <tbody id="senderBijectionBody"></tbody>
+      </table>
+      <h3>接收端具名类型双射（来源 → 新版）</h3>
+      <table class="kv">
+        <thead><tr><th>来源类型名</th><th>新版类型名</th></tr></thead>
+        <tbody id="receiverBijectionBody"></tbody>
+      </table>
+      <pre id="rawMigration" class="raw"></pre>
+    </section>
   </main>
 
   <script src="/app.js"></script>

@@ -14,6 +14,7 @@ from typing import Any
 
 from .models import (
     FieldDecl,
+    MigrationPayload,
     NamedType,
     Payload,
     TagDecl,
@@ -292,3 +293,93 @@ def parse_payload(raw: Any) -> Payload:
         receiver_types=receiver,
         root_name=effective_root,
     )
+
+
+def _validate_decl_side(
+    decls: list[NamedType] | None, side: str, issues: list[str]
+) -> None:
+    """对已构建的一侧声明做引用闭包与无保护别名环校验。"""
+    if decls is None:
+        return
+    _check_undefined(decls, side, issues)
+    _unguarded_alias_cycles(decls, side, issues)
+
+
+def parse_migration_request(raw: Any) -> MigrationPayload:
+    """解析迁移签证请求。
+
+    字段：migration_id、source_audit_id、new_root_name、
+    new_sender_types、new_receiver_types。契约问题一次收集为
+    ValidationError；来源审计是否存在/兼容由存储层在读取冻结记录
+    后判定（MigrationRejectedError）。
+    """
+    issues: list[str] = []
+    if not isinstance(raw, dict):
+        raise ValidationError(["请求体必须是 JSON 对象"])
+
+    migration_id = raw.get("migration_id")
+    if not isinstance(migration_id, str) or not AUDIT_ID_RE.fullmatch(migration_id):
+        issues.append(
+            "migration_id 不合法：需为 1-64 位字母、数字、下划线或连字符"
+        )
+    source_audit_id = raw.get("source_audit_id")
+    if not isinstance(source_audit_id, str) or not AUDIT_ID_RE.fullmatch(
+        source_audit_id
+    ):
+        issues.append(
+            "source_audit_id 不合法：需为 1-64 位字母、数字、下划线或连字符"
+        )
+
+    builder = _Builder(issues)
+    new_sender = builder.build_decl_list(raw.get("new_sender_types"), "新版发送端")
+    new_receiver = builder.build_decl_list(
+        raw.get("new_receiver_types"), "新版接收端"
+    )
+
+    new_root_name = raw.get("new_root_name")
+    if not _is_ident(new_root_name):
+        # 迁移涉及改名：根类型不允许隐式推断，必须显式给出。
+        issues.append("new_root_name 缺失或不合法：迁移时必须显式指定新版根类型名")
+    else:
+        if new_sender is not None and new_root_name not in {
+            d.name for d in new_sender
+        }:
+            issues.append(f"new_root_name {new_root_name!r} 在新版发送端声明中不存在")
+        if new_receiver is not None and new_root_name not in {
+            d.name for d in new_receiver
+        }:
+            issues.append(f"new_root_name {new_root_name!r} 在新版接收端声明中不存在")
+
+    _validate_decl_side(new_sender, "新版发送端", issues)
+    _validate_decl_side(new_receiver, "新版接收端", issues)
+
+    if issues:
+        raise ValidationError(issues)
+
+    assert new_sender is not None and new_receiver is not None
+    assert isinstance(migration_id, str) and isinstance(source_audit_id, str)
+    assert isinstance(new_root_name, str)
+    return MigrationPayload(
+        migration_id=migration_id,
+        source_audit_id=source_audit_id,
+        new_sender_types=new_sender,
+        new_receiver_types=new_receiver,
+        new_root_name=new_root_name,
+    )
+
+
+def parse_frozen_contract(contract: Any) -> Payload:
+    """把冻结记录中的原始契约重新解析为领域模型。
+
+    冻结契约在写入前已经过全部静态校验，这里只做防御性重解析：
+    任何异常形态都视为存储损坏（不应发生）。
+    """
+    if not isinstance(contract, dict):
+        raise ValidationError(["冻结契约损坏：契约记录不是对象"])
+    raw = {
+        "audit_id": contract.get("audit_id"),
+        "root_name": contract.get("root_name"),
+        "sender_types": contract.get("sender"),
+        "receiver_types": contract.get("receiver"),
+    }
+    return parse_payload(raw)

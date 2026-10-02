@@ -83,6 +83,66 @@ class Payload:
 
 
 @dataclass
+class MigrationPayload:
+    """一次迁移签证请求：把已冻结的兼容审计迁到改名/重排后的新版契约。"""
+
+    migration_id: str
+    source_audit_id: str
+    new_sender_types: list[NamedType]
+    new_receiver_types: list[NamedType]
+    new_root_name: str
+
+    def fingerprint_dict(self) -> dict[str, Any]:
+        return {
+            "migration_id": self.migration_id,
+            "source_audit_id": self.source_audit_id,
+            "new_root_name": self.new_root_name,
+            "new_sender": [t.to_json() for t in self.new_sender_types],
+            "new_receiver": [t.to_json() for t in self.new_receiver_types],
+        }
+
+
+@dataclass
+class NamePair:
+    """名称双射中的一对：来源具名类型 -> 新版具名类型。"""
+
+    source: str
+    target: str
+
+    def to_json(self) -> dict[str, Any]:
+        return {"source": self.source, "target": self.target}
+
+
+@dataclass
+class MigrationConclusion:
+    """迁移签证：仅在两侧均结构等价且双射完整时签发。"""
+
+    migration_id: str
+    source_audit_id: str
+    source_root: str
+    new_root: str
+    sender_bijection: list[NamePair]
+    receiver_bijection: list[NamePair]
+    source_audit_fingerprint: str
+    migration_fingerprint: str
+    frozen_at: str
+
+    def to_json(self) -> dict[str, Any]:
+        return {
+            "migration_id": self.migration_id,
+            "source_audit_id": self.source_audit_id,
+            "issued": True,
+            "source_root": self.source_root,
+            "new_root": self.new_root,
+            "sender_bijection": [p.to_json() for p in self.sender_bijection],
+            "receiver_bijection": [p.to_json() for p in self.receiver_bijection],
+            "source_audit_fingerprint": self.source_audit_fingerprint,
+            "migration_fingerprint": self.migration_fingerprint,
+            "frozen_at": self.frozen_at,
+        }
+
+
+@dataclass
 class Mismatch:
     """首个按类型路径稳定选定的违约。"""
 
@@ -147,3 +207,22 @@ class ContractConflictError(Exception):
 
 class AuditNotFoundError(Exception):
     """结论不存在。"""
+
+
+class MigrationRejectedError(Exception):
+    """迁移请求被拒绝：来源不可用/不兼容，或新版契约无法建立结构等价双射。
+
+    reasons 为一次收集的全部拒绝原因。
+    """
+
+    def __init__(self, reasons: list[str]):
+        super().__init__("; ".join(reasons))
+        self.reasons = reasons
+
+
+class MigrationConflictError(Exception):
+    """相同迁移标识重传但来源审计或新版契约发生变化。"""
+
+
+class MigrationNotFoundError(Exception):
+    """迁移签证不存在。"""
