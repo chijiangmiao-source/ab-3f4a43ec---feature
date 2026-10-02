@@ -1,10 +1,12 @@
-"""审计 HTTP API 与静态页面（仅用标准库）。
+"""审计与迁移 HTTP API 及静态页面（仅用标准库）。
 
 接口：
-- GET  /health                         健康检查 -> {"status":"ok"}
-- POST /api/audits                     提交/重传审计载荷
-- GET  /api/audits/{audit_id}          重开冻结结论
-- GET  /                               审计页面
+- GET  /health                              健康检查 -> {"status":"ok"}
+- POST /api/audits                          提交/重传审计载荷
+- GET  /api/audits/{audit_id}               重开冻结结论
+- POST /api/migrations                      提交/重传迁移请求（来源审计 + 新版契约）
+- GET  /api/migrations/{migration_id}       重开冻结迁移结论
+- GET  /                                    审计与迁移页面
 """
 from __future__ import annotations
 
@@ -14,12 +16,15 @@ from http.server import BaseHTTPRequestHandler, ThreadingHTTPServer
 from pathlib import Path
 from urllib.parse import urlsplit
 
+from .migration import MigrationStore
 from .models import (
     AuditNotFoundError,
     ContractConflictError,
+    MigrationNotFoundError,
+    MigrationRejectedError,
     ValidationError,
 )
-from .parser import parse_payload
+from .parser import parse_migration_payload, parse_payload
 from .storage import AuditStore
 
 STATIC_DIR = Path(__file__).resolve().parent / "static"
@@ -29,6 +34,7 @@ MAX_BODY = 2 * 1024 * 1024  # 2 MiB：每套至多 24 个类型，足够。
 class ApiHandler(BaseHTTPRequestHandler):
     server_version = "PayloadAudit/1.0"
     store: AuditStore  # 由工厂注入到类
+    migrations: MigrationStore
 
     def log_message(self, fmt: str, *args) -> None:  # 安静的容器日志
         if os.environ.get("AUDIT_HTTP_LOG"):
@@ -57,6 +63,19 @@ class ApiHandler(BaseHTTPRequestHandler):
         self.end_headers()
         self.wfile.write(body)
 
+    def _read_json_body(self):
+        """读取并解析请求体；失败时已发送错误响应并返回 None。"""
+        length = int(self.headers.get("Content-Length") or 0)
+        if length <= 0 or length > MAX_BODY:
+            self._send_json(413, {"error": "body-size-invalid"})
+            return None
+        raw = self.rfile.read(length)
+        try:
+            return json.loads(raw.decode("utf-8"))
+        except (UnicodeDecodeError, json.JSONDecodeError):
+            self._send_json(400, {"error": "invalid-json"})
+            return None
+
     # ---------- 路由 ----------
     def do_GET(self) -> None:  # noqa: N802 (stdlib API)
         route = urlsplit(self.path)
@@ -72,6 +91,17 @@ class ApiHandler(BaseHTTPRequestHandler):
                 return
             self._send_json(200, {"conclusion": conclusion.to_json()})
             return
+        if route.path.startswith("/api/migrations/"):
+            migration_id = route.path.rsplit("/", 1)[-1]
+            try:
+                conclusion = self.migrations.get(migration_id)
+            except MigrationNotFoundError:
+                self._send_json(
+                    404, {"error": "migration-not-found", "migration_id": migration_id}
+                )
+                return
+            self._send_json(200, {"conclusion": conclusion.to_json()})
+            return
         if route.path in ("/", "/index.html"):
             self._send_static("index.html", "text/html; charset=utf-8")
             return
@@ -84,20 +114,20 @@ class ApiHandler(BaseHTTPRequestHandler):
         self._send_json(404, {"error": "not-found"})
 
     def do_POST(self) -> None:  # noqa: N802
-        if urlsplit(self.path).path != "/api/audits":
-            self._send_json(404, {"error": "not-found"})
+        path = urlsplit(self.path).path
+        if path == "/api/audits":
+            self._handle_submit_audit()
             return
-        length = int(self.headers.get("Content-Length") or 0)
-        if length <= 0 or length > MAX_BODY:
-            self._send_json(413, {"error": "body-size-invalid"})
+        if path == "/api/migrations":
+            self._handle_submit_migration()
             return
-        raw = self.rfile.read(length)
-        try:
-            data = json.loads(raw.decode("utf-8"))
-        except (UnicodeDecodeError, json.JSONDecodeError):
-            self._send_json(400, {"error": "invalid-json"})
-            return
+        self._send_json(404, {"error": "not-found"})
 
+    # ---------- 审计提交 ----------
+    def _handle_submit_audit(self) -> None:
+        data = self._read_json_body()
+        if data is None:
+            return
         try:
             payload = parse_payload(data)
         except ValidationError as exc:
@@ -130,8 +160,75 @@ class ApiHandler(BaseHTTPRequestHandler):
             },
         )
 
+    # ---------- 迁移提交 ----------
+    def _handle_submit_migration(self) -> None:
+        data = self._read_json_body()
+        if data is None:
+            return
+        try:
+            payload = parse_migration_payload(data)
+        except ValidationError as exc:
+            # 新版契约的全部问题一次反馈。
+            self._send_json(400, {"error": "validation-failed", "issues": exc.issues})
+            return
 
-def build_server(host: str, port: int, store: AuditStore) -> ThreadingHTTPServer:
-    handler = type("BoundApiHandler", (ApiHandler,), {"store": store})
+        try:
+            source = self.store.get_frozen_contract(payload.source_audit_id)
+        except AuditNotFoundError:
+            source = None
+
+        try:
+            conclusion, created = self.migrations.submit(payload, source)
+        except ContractConflictError:
+            self._send_json(
+                409,
+                {
+                    "error": "migration-conflict",
+                    "migration_id": payload.migration_id,
+                    "message": (
+                        "迁移标识已冻结另一请求：改换来源审计或新版契约将被拒绝，"
+                        "原结论不会被改写"
+                    ),
+                },
+            )
+            return
+        except MigrationRejectedError as exc:
+            status = 404 if exc.reason == "source-audit-not-found" else 422
+            self._send_json(
+                status,
+                {
+                    "error": "migration-rejected",
+                    "reason": exc.reason,
+                    "migration_id": payload.migration_id,
+                    "message": exc.message,
+                    "detail": exc.detail,
+                },
+            )
+            return
+
+        self._send_json(
+            201 if created else 200,
+            {
+                "conclusion": conclusion.to_json(),
+                "frozen": True,
+                "resubmitted_same_request": not created,
+            },
+        )
+
+
+def build_server(
+    host: str,
+    port: int,
+    store: AuditStore,
+    migrations: MigrationStore | None = None,
+) -> ThreadingHTTPServer:
+    if migrations is None:
+        # 与审计共用数据根目录（migrations/ 子目录），保持单参数调用可用。
+        migrations = MigrationStore(store.dir)
+    handler = type(
+        "BoundApiHandler",
+        (ApiHandler,),
+        {"store": store, "migrations": migrations},
+    )
     server = ThreadingHTTPServer((host, port), handler)
     return server

@@ -23,6 +23,7 @@ from .models import (
     RecyclePoint,
     Mismatch,
 )
+from .parser import parse_payload
 from .subtype import check_compatibility
 
 
@@ -56,6 +57,23 @@ class AuditStore:
         if record is None:
             raise AuditNotFoundError(audit_id)
         return _conclusion_from_json(record["conclusion"])
+
+    def get_frozen_contract(self, audit_id: str) -> tuple[Payload, AuditConclusion]:
+        """读取冻结的原始契约与结论（供迁移比对，绝不重新裁决）。"""
+        record = self._read_raw(audit_id)
+        if record is None:
+            raise AuditNotFoundError(audit_id)
+        contract = record["contract"]
+        # 冻结时已通过全部静态校验，重解析必然成功。
+        payload = parse_payload(
+            {
+                "audit_id": contract["audit_id"],
+                "root_name": contract["root_name"],
+                "sender_types": contract["sender"],
+                "receiver_types": contract["receiver"],
+            }
+        )
+        return payload, _conclusion_from_json(record["conclusion"])
 
     def _read_raw(self, audit_id: str) -> dict | None:
         path = self._path(audit_id)

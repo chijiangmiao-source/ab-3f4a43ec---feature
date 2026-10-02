@@ -78,6 +78,74 @@
       <p id="conflictMsg"></p>
       <p class="meta">相同审计标识已冻结不同契约；原结论保持不变，可点“按标识重开结论”查看。</p>
     </section>
+
+    <section class="card">
+      <h2>迁移到改名新版</h2>
+      <p class="meta">来源审计须已判定兼容；仅当新版两侧声明分别与来源对应声明完全结构等价
+        （允许声明重排与类型名整体替换，字段名、必需性、变体标签、基础类型必须保持）时，
+        才签发迁移结论并返回完整名称双射。</p>
+      <div class="row">
+        <label class="grow">
+          迁移标识
+          <input id="migrationId" type="text" placeholder="如 CMD-MIGRATION-2026-001" spellcheck="false" />
+        </label>
+        <label class="grow">
+          来源审计标识
+          <input id="sourceAuditId" type="text" placeholder="如 CMD-AUDIT-2026-001" spellcheck="false" />
+        </label>
+        <label>
+          新版根类型名
+          <input id="newRootName" type="text" placeholder="如 Command" spellcheck="false" />
+        </label>
+      </div>
+      <div class="row">
+        <button id="loadMigrationExample" type="button" class="ghost">载入改名示例</button>
+        <button id="reopenMigrationBtn" type="button" class="ghost">按标识重开迁移结论</button>
+      </div>
+    </section>
+
+    <div class="grid">
+      <section class="card">
+        <h2>新版发送端类型声明（改名/重排后）</h2>
+        <textarea id="newSenderTypes" spellcheck="false"></textarea>
+      </section>
+      <section class="card">
+        <h2>新版接收端类型声明（改名/重排后）</h2>
+        <textarea id="newReceiverTypes" spellcheck="false"></textarea>
+      </section>
+    </div>
+
+    <section class="card actions">
+      <button id="submitMigrationBtn" type="button">提交迁移 / 幂等重传</button>
+      <span id="migrationError" class="editor-error"></span>
+    </section>
+
+    <section id="migrationIssuesCard" class="card hidden">
+      <h2>新版契约问题（一次反馈，须全部修正）</h2>
+      <ul id="migrationIssuesList"></ul>
+    </section>
+
+    <section id="migrationResultCard" class="card hidden">
+      <h2 id="migrationResultTitle"></h2>
+      <p id="migrationResultMeta" class="meta"></p>
+      <h3>发送端名称双射（来源 → 新版）</h3>
+      <table class="kv">
+        <thead><tr><th>来源类型名</th><th>新版类型名</th></tr></thead>
+        <tbody id="senderMapBody"></tbody>
+      </table>
+      <h3>接收端名称双射（来源 → 新版）</h3>
+      <table class="kv">
+        <thead><tr><th>来源类型名</th><th>新版类型名</th></tr></thead>
+        <tbody id="receiverMapBody"></tbody>
+      </table>
+      <pre id="rawMigration" class="raw"></pre>
+    </section>
+
+    <section id="migrationRejectCard" class="card hidden conflict">
+      <h2>迁移被拒绝</h2>
+      <p id="migrationRejectMsg"></p>
+      <p class="meta">拒绝不写入任何记录；修正后可按同一迁移标识重新提交。</p>
+    </section>
   </main>
 
   <script src="/app.js"></script>

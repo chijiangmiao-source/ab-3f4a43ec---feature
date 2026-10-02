@@ -14,6 +14,7 @@ from typing import Any
 
 from .models import (
     FieldDecl,
+    MigrationPayload,
     NamedType,
     Payload,
     TagDecl,
@@ -238,6 +239,62 @@ def _unguarded_alias_cycles(decls: list[NamedType], side: str, issues: list[str]
         )
 
 
+def _parse_decl_pair(
+    raw: dict,
+    *,
+    sender_key: str,
+    receiver_key: str,
+    root_key: str,
+    label: str,
+    issues: list[str],
+) -> tuple[list[NamedType], list[NamedType], str]:
+    """解析并校验一对发送/接收声明与根类型名（审计与迁移共用）。
+
+    label 为侧名前缀（审计为 ""，迁移新版为 "新版"）。问题一次反馈。
+    """
+    builder = _Builder(issues)
+    sender = builder.build_decl_list(raw.get(sender_key), f"{label}发送端")
+    receiver = builder.build_decl_list(raw.get(receiver_key), f"{label}接收端")
+
+    root_name = raw.get(root_key)
+    if root_name is not None and not _is_ident(root_name):
+        issues.append(f"{root_key} {root_name!r} 不合法")
+
+    if issues:
+        raise ValidationError(issues)
+
+    assert sender is not None and receiver is not None
+
+    # 结构性校验依赖解析成功的声明。
+    _check_undefined(sender, f"{label}发送端", issues)
+    _check_undefined(receiver, f"{label}接收端", issues)
+
+    sender_names = {d.name for d in sender}
+    receiver_names = {d.name for d in receiver}
+    effective_root = root_name
+    if effective_root is None:
+        # 默认根：若发送端只有一个类型则用它，否则要求显式指定。
+        effective_root = sender[0].name if len(sender) == 1 else None
+        if effective_root is None:
+            issues.append(
+                f"{root_key} 缺失：{label}发送端声明了多个类型时必须显式指定根类型"
+            )
+    else:
+        if effective_root not in sender_names:
+            issues.append(f"{root_key} {effective_root!r} 在{label}发送端声明中不存在")
+        if effective_root not in receiver_names:
+            issues.append(f"{root_key} {effective_root!r} 在{label}接收端声明中不存在")
+
+    _unguarded_alias_cycles(sender, f"{label}发送端", issues)
+    _unguarded_alias_cycles(receiver, f"{label}接收端", issues)
+
+    if issues:
+        raise ValidationError(issues)
+
+    assert isinstance(effective_root, str)
+    return sender, receiver, effective_root
+
+
 def parse_payload(raw: Any) -> Payload:
     issues: list[str] = []
     if not isinstance(raw, dict):
@@ -249,46 +306,58 @@ def parse_payload(raw: Any) -> Payload:
             "audit_id 不合法：需为 1-64 位字母、数字、下划线或连字符"
         )
 
-    builder = _Builder(issues)
-    sender = builder.build_decl_list(raw.get("sender_types"), "发送端")
-    receiver = builder.build_decl_list(raw.get("receiver_types"), "接收端")
+    sender, receiver, effective_root = _parse_decl_pair(
+        raw,
+        sender_key="sender_types",
+        receiver_key="receiver_types",
+        root_key="root_name",
+        label="",
+        issues=issues,
+    )
 
-    root_name = raw.get("root_name")
-    if root_name is not None and not _is_ident(root_name):
-        issues.append(f"root_name {root_name!r} 不合法")
-
-    if issues:
-        raise ValidationError(issues)
-
-    assert sender is not None and receiver is not None and isinstance(audit_id, str)
-
-    # 结构性校验依赖解析成功的声明。
-    _check_undefined(sender, "发送端", issues)
-    _check_undefined(receiver, "接收端", issues)
-
-    sender_names = {d.name for d in sender}
-    receiver_names = {d.name for d in receiver}
-    effective_root = root_name
-    if effective_root is None:
-        # 默认根：若发送端只有一个类型则用它，否则要求显式指定。
-        effective_root = sender[0].name if len(sender) == 1 else None
-        if effective_root is None:
-            issues.append("root_name 缺失：发送端声明了多个类型时必须显式指定根类型")
-    else:
-        if effective_root not in sender_names:
-            issues.append(f"root_name {effective_root!r} 在发送端声明中不存在")
-        if effective_root not in receiver_names:
-            issues.append(f"root_name {effective_root!r} 在接收端声明中不存在")
-
-    _unguarded_alias_cycles(sender, "发送端", issues)
-    _unguarded_alias_cycles(receiver, "接收端", issues)
-
-    if issues:
-        raise ValidationError(issues)
-
+    assert isinstance(audit_id, str)
     return Payload(
         audit_id=audit_id,
         sender_types=sender,
         receiver_types=receiver,
         root_name=effective_root,
+    )
+
+
+def parse_migration_payload(raw: Any) -> MigrationPayload:
+    """解析迁移请求：迁移标识、来源审计标识与新版两侧声明、根类型。"""
+    issues: list[str] = []
+    if not isinstance(raw, dict):
+        raise ValidationError(["请求体必须是 JSON 对象"])
+
+    migration_id = raw.get("migration_id")
+    if not isinstance(migration_id, str) or not AUDIT_ID_RE.fullmatch(migration_id):
+        issues.append(
+            "migration_id 不合法：需为 1-64 位字母、数字、下划线或连字符"
+        )
+
+    source_audit_id = raw.get("source_audit_id")
+    if not isinstance(source_audit_id, str) or not AUDIT_ID_RE.fullmatch(
+        source_audit_id
+    ):
+        issues.append(
+            "source_audit_id 不合法：需为 1-64 位字母、数字、下划线或连字符"
+        )
+
+    sender, receiver, effective_root = _parse_decl_pair(
+        raw,
+        sender_key="new_sender_types",
+        receiver_key="new_receiver_types",
+        root_key="new_root_name",
+        label="新版",
+        issues=issues,
+    )
+
+    assert isinstance(migration_id, str) and isinstance(source_audit_id, str)
+    return MigrationPayload(
+        migration_id=migration_id,
+        source_audit_id=source_audit_id,
+        new_sender_types=sender,
+        new_receiver_types=receiver,
+        new_root_name=effective_root,
     )

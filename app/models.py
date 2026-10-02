@@ -83,6 +83,31 @@ class Payload:
 
 
 @dataclass
+class MigrationPayload:
+    """一次迁移提交的原始载荷（将被冻结）。
+
+    把已判定兼容的冻结审计（source_audit_id）迁移到供应商改名并重排
+    声明后的新版契约；仅当新版两侧分别与来源对应声明完全结构等价时
+    才签发迁移结论。
+    """
+
+    migration_id: str
+    source_audit_id: str
+    new_sender_types: list[NamedType]
+    new_receiver_types: list[NamedType]
+    new_root_name: str | None = None
+
+    def fingerprint_dict(self) -> dict[str, Any]:
+        return {
+            "migration_id": self.migration_id,
+            "source_audit_id": self.source_audit_id,
+            "new_root_name": self.new_root_name,
+            "new_sender": [t.to_json() for t in self.new_sender_types],
+            "new_receiver": [t.to_json() for t in self.new_receiver_types],
+        }
+
+
+@dataclass
 class Mismatch:
     """首个按类型路径稳定选定的违约。"""
 
@@ -133,6 +158,35 @@ class AuditConclusion:
         }
 
 
+@dataclass
+class MigrationConclusion:
+    """迁移结论：新版契约与来源冻结审计完全结构等价的冻结证据。"""
+
+    migration_id: str
+    source_audit_id: str
+    source_root: str
+    new_root: str
+    sender_mapping: dict[str, str]  # 来源类型名 -> 新版类型名（完整双射，稳定选出）
+    receiver_mapping: dict[str, str]
+    source_contract_fingerprint: str
+    migration_fingerprint: str
+    frozen_at: str
+
+    def to_json(self) -> dict[str, Any]:
+        return {
+            "migration_id": self.migration_id,
+            "source_audit_id": self.source_audit_id,
+            "source_root": self.source_root,
+            "new_root": self.new_root,
+            "equivalent": True,
+            "sender_mapping": dict(self.sender_mapping),
+            "receiver_mapping": dict(self.receiver_mapping),
+            "source_contract_fingerprint": self.source_contract_fingerprint,
+            "migration_fingerprint": self.migration_fingerprint,
+            "frozen_at": self.frozen_at,
+        }
+
+
 class ValidationError(Exception):
     """契约本身不合法：一次收集全部问题。"""
 
@@ -147,3 +201,17 @@ class ContractConflictError(Exception):
 
 class AuditNotFoundError(Exception):
     """结论不存在。"""
+
+
+class MigrationNotFoundError(Exception):
+    """迁移结论不存在。"""
+
+
+class MigrationRejectedError(Exception):
+    """迁移被明确拒绝：reason 为稳定机器可读码，不写入任何冻结记录。"""
+
+    def __init__(self, reason: str, message: str, detail: dict[str, Any] | None = None):
+        super().__init__(message)
+        self.reason = reason
+        self.message = message
+        self.detail = detail or {}
